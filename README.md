@@ -53,10 +53,13 @@ PM2 配置见 `ecosystem.config.js`，默认内存限制 128M。
 
 获取全部推送历史记录。
 
+响应中的 `deletedIds` 用于阻止其他浏览器的旧本地镜像恢复已删除记录。
+
 **响应 200：**
 ```json
 {
   "ok": true,
+  "deletedIds": [],
   "records": [
     {
       "id": "m5k2x1p3a",
@@ -67,7 +70,8 @@ PM2 配置见 `ecosystem.config.js`，默认内存限制 128M。
       "status": 2,
       "createdAt": 1716562800000,
       "updatedAt": 1716562900000,
-      "errorMessage": ""
+      "errorMessage": "",
+      "staleNotifiedAt": 0
     }
   ]
 }
@@ -131,6 +135,46 @@ PM2 配置见 `ecosystem.config.js`，默认内存限制 128M。
 
 ---
 
+### POST /api/history/batch-delete
+
+批量删除历史记录，一次请求只写入一次数据文件。
+
+**请求体：**
+```json
+{
+  "ids": ["record-id-1", "record-id-2"]
+}
+```
+
+**响应 200：** `{ "ok": true, "deleted": 2 }`
+
+---
+
+### POST /api/history/mark-stale-notified
+
+批量标记异常任务已经提醒。已经标记的记录不会重复修改，用于跨浏览器保持“只提醒一次”。
+
+**请求体：**
+```json
+{
+  "ids": ["record-id-1", "record-id-2"],
+  "notifiedAt": 1716563000000
+}
+```
+
+`notifiedAt` 可选，缺失时使用服务端当前时间。
+
+**响应 200：**
+```json
+{
+  "ok": true,
+  "updated": 2,
+  "notifiedAt": 1716563000000
+}
+```
+
+---
+
 ### POST /api/history/sync
 
 批量同步记录。按 `id` 合并：id 相同以客户端字段为准，客户端新增的记录追加到服务端。
@@ -155,6 +199,7 @@ PM2 配置见 `ecosystem.config.js`，默认内存限制 128M。
 ## 数据存储
 
 记录以 JSON 文件存储在 `data/push-history.json`。容量限制与扩展保持一致：最大 4MB，超过 3MB 时按优先级裁剪（成功 → 已提交 → 保留失败/离线中）。
+已删除记录的 ID 存放在同目录的 `push-history-deleted.json`，用于跨浏览器同步删除结果。
 
 ## 在扩展中配置
 

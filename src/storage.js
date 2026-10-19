@@ -18,6 +18,26 @@ function getHistoryPath() {
   return path.join(config.dataDir, config.historyFile);
 }
 
+/** 删除记录的 ID 单独保存，防止其他浏览器的旧本地镜像再次同步回来。 */
+function getDeletedIdsPath() {
+  ensureDataDir();
+  return path.join(config.dataDir, "push-history-deleted.json");
+}
+
+function loadDeletedIds() {
+  var filePath = getDeletedIdsPath();
+  if (!fs.existsSync(filePath)) return [];
+  var ids = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  return Array.isArray(ids) ? ids : [];
+}
+
+function saveDeletedIds(ids) {
+  var filePath = getDeletedIdsPath();
+  var tmpPath = filePath + ".tmp";
+  fs.writeFileSync(tmpPath, JSON.stringify(ids), "utf-8");
+  fs.renameSync(tmpPath, filePath);
+}
+
 /** 读取全部记录 */
 function loadRecords() {
   const filePath = getHistoryPath();
@@ -27,7 +47,12 @@ function loadRecords() {
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
     const records = JSON.parse(raw);
-    return Array.isArray(records) ? records : [];
+    if (!Array.isArray(records)) return [];
+    // 删除标记先写入磁盘；即使随后写历史文件失败，也不会让记录重新出现。
+    var deletedIds = new Set(loadDeletedIds());
+    return records.filter(function (record) {
+      return record && !deletedIds.has(String(record.id));
+    });
   } catch (e) {
     console.error("[Storage] 读取历史文件失败:", e.message);
     return [];
@@ -133,7 +158,9 @@ function addRecord(data) {
     status: typeof data.status === "number" ? data.status : 0,
     createdAt: data.createdAt || Date.now(),
     updatedAt: data.updatedAt || Date.now(),
-    errorMessage: data.errorMessage || ""
+    errorMessage: data.errorMessage || "",
+    // 记录异常提醒时间，确保远程模式下不同浏览器不会重复提醒。
+    staleNotifiedAt: Number(data.staleNotifiedAt) || 0
   };
   records.unshift(record);
   saveRecords(trimHistoryBySize(records));
@@ -151,6 +178,9 @@ function updateRecord(id, fields) {
       }
       if (fields.hasOwnProperty("errorMessage")) {
         records[i].errorMessage = fields.errorMessage;
+      }
+      if (fields.hasOwnProperty("staleNotifiedAt")) {
+        records[i].staleNotifiedAt = Number(fields.staleNotifiedAt) || 0;
       }
       records[i].updatedAt = Date.now();
       found = records[i];
@@ -171,27 +201,70 @@ function deleteRecord(id) {
   if (filtered.length === records.length) {
     return false;
   }
+  saveDeletedIds(Array.from(new Set(loadDeletedIds().concat([String(id)]))));
   saveRecords(filtered);
   return true;
+}
+
+/** 批量删除记录，只执行一次文件写入 */
+function deleteRecords(ids) {
+  var idSet = new Set((Array.isArray(ids) ? ids : []).map(String));
+  var records = loadRecords();
+  var filtered = records.filter(function (record) {
+    return !record || !idSet.has(String(record.id));
+  });
+  var deleted = records.length - filtered.length;
+  if (deleted > 0) {
+    var deletedIds = records.filter(function (record) {
+      return record && idSet.has(String(record.id));
+    }).map(function (record) { return String(record.id); });
+    saveDeletedIds(Array.from(new Set(loadDeletedIds().concat(deletedIds))));
+    saveRecords(filtered);
+  }
+  return deleted;
+}
+
+/** 批量记录异常提醒时间，只更新仍然存在的记录 */
+function markStaleNotified(ids, notifiedAt) {
+  var idSet = new Set((Array.isArray(ids) ? ids : []).map(String));
+  var records = loadRecords();
+  var timestamp = Number(notifiedAt) || Date.now();
+  var updated = 0;
+  records.forEach(function (record) {
+    if (!record || !idSet.has(String(record.id)) || Number(record.staleNotifiedAt) > 0) {
+      return;
+    }
+    record.staleNotifiedAt = timestamp;
+    updated++;
+  });
+  if (updated > 0) {
+    saveRecords(trimHistoryBySize(records));
+  }
+  return { records: records, updated: updated, notifiedAt: timestamp };
 }
 
 /** 同步合并：id 相同以客户端为准，客户端有而服务端没有的追加 */
 function syncRecords(clientRecords) {
   var serverRecords = loadRecords();
   var serverMap = {};
+  var deletedIds = new Set(loadDeletedIds());
   serverRecords.forEach(function (r) { serverMap[r.id] = r; });
 
   var added = 0;
   var updated = 0;
 
   clientRecords.forEach(function (cr) {
-    if (!cr || !cr.id) return;
+    if (!cr || !cr.id || deletedIds.has(String(cr.id))) return;
     if (serverMap[cr.id]) {
       // 已存在：合并 status/errorMessage/updatedAt
       var sr = serverMap[cr.id];
       if (cr.status !== undefined) sr.status = cr.status;
       if (cr.errorMessage !== undefined) sr.errorMessage = cr.errorMessage;
       if (cr.updatedAt) sr.updatedAt = cr.updatedAt;
+      // 已提醒状态只允许向前合并，避免旧客户端同步时清空服务端标记。
+      if (Number(cr.staleNotifiedAt) > Number(sr.staleNotifiedAt || 0)) {
+        sr.staleNotifiedAt = Number(cr.staleNotifiedAt);
+      }
       // 不覆盖 createdAt、infoHash 等核心字段
       updated++;
     } else {
@@ -205,7 +278,8 @@ function syncRecords(clientRecords) {
         status: typeof cr.status === "number" ? cr.status : 0,
         createdAt: cr.createdAt || Date.now(),
         updatedAt: cr.updatedAt || Date.now(),
-        errorMessage: cr.errorMessage || ""
+        errorMessage: cr.errorMessage || "",
+        staleNotifiedAt: Number(cr.staleNotifiedAt) || 0
       });
       added++;
     }
@@ -223,10 +297,13 @@ function getRecordCount() {
 
 module.exports = {
   loadRecords: loadRecords,
+  loadDeletedIds: loadDeletedIds,
   saveRecords: saveRecords,
   addRecord: addRecord,
   updateRecord: updateRecord,
   deleteRecord: deleteRecord,
+  deleteRecords: deleteRecords,
+  markStaleNotified: markStaleNotified,
   syncRecords: syncRecords,
   getRecordCount: getRecordCount,
   trimHistoryBySize: trimHistoryBySize
