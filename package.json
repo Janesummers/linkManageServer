@@ -1,0 +1,17 @@
+{
+  "name": "linkmanage-history-server",
+  "version": "1.0.0",
+  "description": "LinkManage 推送历史服务端存储，支持跨浏览器同步",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "pm2:start": "pm2 start ecosystem.config.js",
+    "pm2:stop": "pm2 stop linkmanage-history",
+    "pm2:restart": "pm2 restart linkmanage-history",
+    "pm2:logs": "pm2 logs linkmanage-history"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "uuid": "^9.0.0"
+  }
+}
