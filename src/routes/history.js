@@ -2,11 +2,101 @@ const express = require("express");
 const router = express.Router();
 const storage = require("../storage");
 
+/** 从来源地址提取与扩展页面一致的站点名称。 */
+function getSourceHost(record) {
+  var sourceUrl = String((record && record.sourceUrl) || "").trim();
+  if (!sourceUrl) return "未知来源";
+  try {
+    return new URL(sourceUrl).hostname || "未知来源";
+  } catch (e) {
+    return sourceUrl;
+  }
+}
+
+/** 按页面传入的组合条件筛选历史记录。 */
+function filterRecords(records, query, includeStatus) {
+  var keyword = String(query.keyword || "").trim().toLowerCase();
+  var library = String(query.library || "all");
+  var source = String(query.source || "all");
+  var createdAfter = Math.max(0, Number(query.createdAfter) || 0);
+  var staleBefore = Math.max(0, Number(query.staleBefore) || 0);
+  var status = String(query.status || "all");
+
+  return records.filter(function (record) {
+    if (!record) return false;
+    if (includeStatus && status !== "all" && record.status !== Number(status)) return false;
+    if (library !== "all" && String(record.libraryName || "") !== library) return false;
+    if (source !== "all" && getSourceHost(record) !== source) return false;
+    if (createdAfter > 0 && Number(record.createdAt || 0) < createdAfter) return false;
+    if (query.staleOnly === "true") {
+      var updatedAt = Number(record.updatedAt || record.createdAt || 0);
+      if ((record.status !== 0 && record.status !== 1) || !updatedAt || updatedAt >= staleBefore) {
+        return false;
+      }
+    }
+    if (!keyword) return true;
+    var searchableText = [
+      record.magnetUrl,
+      record.infoHash,
+      record.sourceUrl,
+      getSourceHost(record),
+      record.libraryName,
+      record.errorMessage
+    ].map(function (value) {
+      return String(value || "").toLowerCase();
+    }).join(" ");
+    return searchableText.indexOf(keyword) !== -1;
+  });
+}
+
 // GET /api/history
 router.get("/history", function (req, res) {
   try {
-    var records = storage.loadRecords();
-    res.json({ ok: true, records: records, deletedIds: storage.loadDeletedIds() });
+    var records = storage.loadRecords().sort(function (a, b) {
+      var aTime = Number((a && (a.updatedAt || a.createdAt)) || 0);
+      var bTime = Number((b && (b.updatedAt || b.createdAt)) || 0);
+      return bTime - aTime;
+    });
+    var deletedIds = storage.loadDeletedIds();
+
+    // 不带分页参数时保留原接口行为，供同步和导入逻辑继续获取完整数据。
+    if (!req.query.page && !req.query.pageSize) {
+      return res.json({ ok: true, records: records, deletedIds: deletedIds });
+    }
+
+    var pageSize = Math.min(100, Math.max(1, parseInt(req.query.pageSize, 10) || 20));
+    var baseRecords = filterRecords(records, req.query, false);
+    var filteredRecords = filterRecords(baseRecords, req.query, true);
+    var totalPages = Math.max(1, Math.ceil(filteredRecords.length / pageSize));
+    var page = Math.min(totalPages, Math.max(1, parseInt(req.query.page, 10) || 1));
+    var start = (page - 1) * pageSize;
+    var statusCounts = { all: baseRecords.length, "-1": 0, "0": 0, "1": 0, "2": 0 };
+    baseRecords.forEach(function (record) {
+      var key = String(record.status);
+      if (Object.prototype.hasOwnProperty.call(statusCounts, key)) {
+        statusCounts[key]++;
+      }
+    });
+
+    res.json({
+      ok: true,
+      records: filteredRecords.slice(start, start + pageSize),
+      deletedIds: deletedIds,
+      pagination: {
+        page: page,
+        pageSize: pageSize,
+        total: filteredRecords.length,
+        totalPages: totalPages
+      },
+      totalRecords: records.length,
+      statusCounts: statusCounts,
+      filters: {
+        libraries: Array.from(new Set(records.map(function (record) {
+          return String(record.libraryName || "").trim();
+        }).filter(Boolean))).sort(),
+        sources: Array.from(new Set(records.map(getSourceHost))).sort()
+      }
+    });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }

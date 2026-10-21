@@ -51,7 +51,21 @@ PM2 配置见 `ecosystem.config.js`，默认内存限制 128M。
 
 ### GET /api/history
 
-获取全部推送历史记录。
+获取推送历史记录。不传分页参数时兼容原行为并返回全部记录；页面列表应传入分页参数。
+
+**查询参数：**
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `page` | `1` | 页码 |
+| `pageSize` | `20` | 每页数量，最大 100 |
+| `status` | `all` | 状态筛选：`-1`、`0`、`1`、`2` 或 `all` |
+| `keyword` | 空 | 搜索磁链、Hash、来源、媒体库或错误信息 |
+| `library` | `all` | 媒体库筛选 |
+| `source` | `all` | 来源站点筛选 |
+| `createdAfter` | `0` | 仅返回该时间戳之后创建的记录 |
+| `staleOnly` | `false` | 是否仅返回异常超时任务 |
+| `staleBefore` | `0` | 异常超时判断时间戳 |
 
 响应中的 `deletedIds` 用于阻止其他浏览器的旧本地镜像恢复已删除记录。
 
@@ -60,6 +74,24 @@ PM2 配置见 `ecosystem.config.js`，默认内存限制 128M。
 {
   "ok": true,
   "deletedIds": [],
+  "pagination": {
+    "page": 1,
+    "pageSize": 20,
+    "total": 42,
+    "totalPages": 3
+  },
+  "totalRecords": 42,
+  "statusCounts": {
+    "all": 42,
+    "-1": 1,
+    "0": 2,
+    "1": 3,
+    "2": 36
+  },
+  "filters": {
+    "libraries": ["待审"],
+    "sources": ["example.com"]
+  },
   "records": [
     {
       "id": "m5k2x1p3a",
